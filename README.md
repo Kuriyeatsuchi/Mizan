@@ -2,7 +2,7 @@
 
 **NASA Space Apps Challenge 2026** · Challenge: *Be An Earth System Trend Detective!* · Universal Event
 
-**Live app:** ADD YOUR LINK HERE
+**Live app:** https://mizan-trends.streamlit.app
 
 Mizan (ميزان, "scale") weighs the evidence before calling a change in NASA data a trend.
 Pick a place and a variable. Mizan shows how it changed since 1981, how fast it is changing
