@@ -128,7 +128,7 @@ Accessed 14 November 2026. Parameters: `T2M`, `T2M_MAX`, `T2M_MIN`, `PRECTOTCORR
 
 - Sen (1968) and Theil (1950): the median-of-slopes trend estimate.
 - Mann (1945) and Kendall (1975): the rank-based trend test.
-- Hamed & Rao (1998), Yue & Wang (2004): correcting that test for autocorrelation.
+- Hamed & Rao (1998), Yue & Wang (2004): lag-1 variance inflation approach for autocorrelation.
 - Schwarz (1978): the Bayesian information criterion used to compare a step with a line.
 - Benjamini & Hochberg (1995): false discovery rate control across many places.
 
