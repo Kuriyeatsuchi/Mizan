@@ -10,10 +10,11 @@ def ar1(rng,phi,sd=1.0):
     for i in range(1,n): x[i]=phi*x[i-1]+e[i]
     return x
 def run(name,gen,reps=300):
-    rng=np.random.default_rng(7); c={}
+    rng=np.random.default_rng(7); c={}; plain=0
     for _ in range(reps):
-        l=stats.judge(Y,gen(rng)).label; c[l]=c.get(l,0)+1
-    print(f"{name:42s}", {k:round(v/reps,3) for k,v in sorted(c.items())})
+        x=gen(rng); l=stats.judge(Y,x).label; c[l]=c.get(l,0)+1
+        plain+=stats.naive_p(Y,x)<stats.ALPHA   # what a spreadsheet trend line would report
+    print(f"{name:42s}", {k:round(v/reps,3) for k,v in sorted(c.items())}, "plain line significant:", round(plain/reps,3))
 run("noise only, independent", lambda r: ar1(r,0.0))
 run("noise only, AR(1) 0.3", lambda r: ar1(r,0.3))
 run("noise only, AR(1) 0.5", lambda r: ar1(r,0.5))
