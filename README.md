@@ -4,7 +4,7 @@
 
 **Live app:** https://mizan-trends.streamlit.app
 
-Mizan (ميزان, "scale") weighs the evidence before calling a change in NASA data a trend.
+Mizan weighs the evidence before calling a change in NASA data a trend.
 Pick a place and a variable. Mizan shows how it has changed since 1981, how fast it is changing
 per decade, and a verdict with its reasons: **Robust**, **Inconclusive** or **Abrupt shift**.
 
