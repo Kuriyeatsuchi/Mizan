@@ -1,0 +1,6 @@
+{
+  "units": "C",
+  "longname": "Temperature at 2 Meters Minimum",
+  "url": "https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=T2M_MIN&community=AG&latitude=16.89&longitude=42.57&start=1981&end=2025&format=JSON",
+  "accessed": "2026-11-14"
+}

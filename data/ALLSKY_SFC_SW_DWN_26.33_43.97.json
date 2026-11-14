@@ -1,0 +1,6 @@
+{
+  "units": "MJ/m^2/day",
+  "longname": "All Sky Surface Shortwave Downward Irradiance",
+  "url": "https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=ALLSKY_SFC_SW_DWN&community=AG&latitude=26.33&longitude=43.97&start=1981&end=2025&format=JSON",
+  "accessed": "2026-11-14"
+}

@@ -1,0 +1,6 @@
+{
+  "units": "%",
+  "longname": "Relative Humidity at 2 Meters",
+  "url": "https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=RH2M&community=AG&latitude=27.52&longitude=41.7&start=1981&end=2025&format=JSON",
+  "accessed": "2026-11-14"
+}
