@@ -79,3 +79,25 @@ def test_saved_copy_is_used_without_internet(tmp_path, monkeypatch):
 
 def test_naive_p_matches_a_clear_line():
     assert stats.naive_p(YEARS, 0.1 * YEARS) < 1e-6
+
+
+def test_sources_are_attributed_per_variable():
+    for weather in ("T2M", "T2M_MAX", "T2M_MIN", "PRECTOTCORR", "RH2M", "WS10M"):
+        assert "MERRA-2" in power.source_of(weather)
+    sunlight = power.source_of("ALLSKY_SFC_SW_DWN")
+    assert "GEWEX SRB" in sunlight and "CERES SYN1deg" in sunlight and "MERRA-2" not in sunlight
+    assert set(power.SOURCES) == set(power.VARIABLES)
+
+
+def test_saved_copies_carry_their_source():
+    lat, lon = power.CITIES["Tabuk"]
+    _, meta = power.fetch(lat, lon, "ALLSKY_SFC_SW_DWN")
+    assert meta["saved_copy"] is True and "CERES" in meta["source"]
+
+
+def test_stress_test_window_length():
+    rng = np.random.default_rng(4)
+    assert stats.window_test(YEARS, rng.normal(0, 1, 45)).long_length == 20          # 45-year record
+    assert stats.window_test(YEARS[:42], rng.normal(0, 1, 42)).long_length == 20     # sunlight, 42 years
+    assert stats.window_test(YEARS[:25], rng.normal(0, 1, 25)).long_length == 15     # 60% of 25
+    assert stats.window_test(YEARS[:20], rng.normal(0, 1, 20)).long_length == 12     # 60% of 20

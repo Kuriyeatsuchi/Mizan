@@ -234,6 +234,10 @@ with tab_one:
         st.warning("Desert rainfall is mostly zeros with a few big storms, and model rainfall is weak over deserts. "
                    "Treat rainfall verdicts here with extra caution.")
 
+    if parameter == "ALLSKY_SFC_SW_DWN":
+        st.warning("This sunlight record joins two NASA products: GEWEX SRB up to 2000 and CERES from 2001. "
+                   "NASA advises caution when reading climate trends across a change of source.")
+
     verdict = stats.judge(years, values)
     disagreement = gotcha(verdict, years, values)
     if disagreement:
@@ -256,7 +260,9 @@ with tab_one:
     with st.expander("Data source"):
         st.markdown(
             f"**NASA POWER**, parameter `{parameter}` ({meta['longname'] or power.VARIABLES[parameter]}), "
-            f"monthly values averaged over the chosen months. Meteorological values come from NASA's MERRA-2 model.\n\n"
+            f"monthly values averaged over the chosen months.\n\n"
+            f"Source product: {meta.get('source') or power.source_of(parameter)} "
+            f"([NASA POWER data sources]({power.SOURCES_URL}))\n\n"
             f"Request: `{meta['url']}`\n\nAccessed: {meta['accessed']}"
             + ("  (saved copy in this repository)" if meta.get("saved_copy") else ""))
         st.download_button("Download the yearly values (CSV)",
@@ -292,6 +298,10 @@ with tab_many:
 
         if rows:
             result = pd.DataFrame(rows)
+            # Benjamini-Hochberg false discovery rate correction, applied HERE ONLY:
+            # this tab tests all 15 areas at once for one variable and season, so the
+            # chance of a false alarm somewhere is higher than for one test. The
+            # "Investigate one place" tab runs a single test and is not adjusted.
             adjusted, keep = stats.benjamini_hochberg(result["p"].to_numpy())
             result["Adjusted p"] = adjusted
             # A city only stays "Robust" if it survives the many-places correction.
@@ -332,16 +342,16 @@ with tab_many:
 with tab_method:
     st.header("How Mizan decides")
     st.markdown(f"""
-Mizan (ميزان) means *scale*. A rising line is easy to draw. Mizan weighs four pieces of evidence before it calls that line a trend.
+Mizan means “balance” in Arabic. A rising line is easy to draw. Mizan weighs four pieces of evidence before it calls that line a trend.
 
-**The decision rule** (fixed before we looked at any results)
+**The decision rule**: the same four checks, in the same order and with the same thresholds, for every place, variable and season.
 
 | Check | Question | Passes when |
 |---|---|---|
 | Record length | Is there enough data? | At least {stats.MIN_YEARS} complete years |
-| Noise test | Could random variation explain it? | Mann-Kendall p below {stats.ALPHA} after the autocorrelation correction, and the 95% range of the slope excludes zero |
-| Shift check | Is it gradual? | A single step does not fit clearly better than a line (BIC difference of {stats.STEP_BIC_MARGIN:.0f} or less), or a same-direction trend exists on one side of the step |
-| Stress test | Does it survive other start and end years? | At least {stats.AGREEMENT_NEEDED * 100:.0f}% of all periods of {stats.MIN_YEARS}+ years have the same direction as the full record |
+| Noise test | Could random variation explain it? | Mann-Kendall p below {stats.ALPHA} after a lag-1 autocorrelation correction, and the 95% range of the slope excludes zero |
+| Shift check | Is it gradual? | A single step does not fit clearly better than a line (BIC difference of {stats.STEP_BIC_MARGIN:.0f} or less), or a significant same-direction trend exists on one side of the step |
+| Stress test | Does it survive other start and end years? | At least {stats.AGREEMENT_NEEDED * 100:.0f}% of all periods of {stats.MIN_YEARS}+ years have the same direction as the full record (for records under 30 years: periods of at least 60% of the record) |
 
 **Verdicts**
 
@@ -352,31 +362,38 @@ Mizan (ميزان) means *scale*. A rising line is easy to draw. Mizan weighs fo
 **Why these checks**
 
 - *Size.* The Theil-Sen slope is the median of the slopes between every pair of years. One freak year cannot drag it.
-- *Noise test.* Years that resemble their neighbours carry less independent information, so the test is made stricter when we detect that.
+- *Noise test.* Years that resemble their neighbours carry less independent information, so the test is made stricter when we detect that. We use a lag-1 variance inflation approximation, (1 + ρ) / (1 − ρ), the simplest form of the idea behind Hamed & Rao (1998) and Yue & Wang (2004), not their full methods.
 - *Stress test.* Periods shorter than {stats.MIN_YEARS} years flip direction easily, so only longer ones count. This guards against cherry-picked start years.
-- *Shift check.* NASA POWER's weather values come from a model (MERRA-2) that absorbed new satellites over time, which can create steps.
-- *Many places.* When comparing cities we adjust the p-values (Benjamini-Hochberg), because testing many places at the 5% level produces false alarms by chance.
+- *Shift check.* NASA POWER's weather values come from a model (MERRA-2) that absorbed new satellites over time, and its sunlight record switches from GEWEX SRB to CERES in 2001. Both can create steps.
+- *Many places.* In the *Compare Saudi cities* tab only, we adjust the p-values (Benjamini-Hochberg), because testing 15 places at the 5% level produces false alarms by chance. A single place in the first tab is one test and is not adjusted.
 
 **What Mizan adds to a plain trend line.** A spreadsheet trend line assumes every year is independent and uses every start year you give it.
 Mizan reports when the two disagree.
 
-**How well is the scale calibrated?** We ran Mizan on simulated 45-year records (`calibration.py`, 300 records per case):
+**How well calibrated is Mizan?** We ran Mizan, and an ordinary straight-line fit, on simulated 45-year records where
+the truth is known (`calibration.py`, 300 records per case). Trends have year-to-year autocorrelation 0.3; steps happen in 2001.
 
-| Simulated truth | Called Robust | Called Abrupt shift |
-|---|---|---|
-| Pure noise, independent years | 3% | 0% |
-| Pure noise, years resemble neighbours | about 6% | under 1% |
-| Clear gradual trend | 93% | 6% |
-| Weak gradual trend | 24% | 4% |
-| Large single step | 39% | 59% |
+| Simulated truth | Plain line significant | Mizan: Robust | Mizan: Abrupt shift |
+|---|---|---|---|
+| Pure noise, independent years | 4% | 3% | 0% |
+| Pure noise, autocorrelation 0.3 | 16% | 6% | 0.3% |
+| Pure noise, autocorrelation 0.5 | 27% | 6% | 0.7% |
+| Weak trend (0.3 sd per decade) | 66% | 24% | 4% |
+| Moderate trend (0.6 sd per decade) | 99% | 73% | 9% |
+| Clear trend (1.0 sd per decade) | 100% | 93% | 6% |
+| Small single step (1 sd) | 76% | 50% | 5% |
+| Large single step (2 sd) | 100% | 39% | 59% |
 
-So Mizan rarely invents a trend from noise. It misses weak trends, and it cannot always tell a step from a gradual change.
+On noise where neighbouring years resemble each other, as they do in climate data, a plain line raises a false alarm
+up to 27% of the time; Mizan stays near 6%. The cost: Mizan misses most weak trends, and it cannot always tell a step
+from a gradual change (it calls a small step Robust half the time).
 
 **Limits**
 
 - One grid cell of NASA POWER is roughly 50 km wide. Values describe an area, not a city centre or a mountain top.
 - Rainfall verdicts in deserts are unreliable: mostly zeros, rare storms, and weak model rainfall.
 - Records start in 1981 (1984 for sunlight). Mizan says nothing about earlier decades.
+- The sunlight record joins GEWEX SRB (to 2000) and CERES (from 2001), so sunlight verdicts for whole records deserve caution.
 - A robust trend says *that* something changed, not *why*.
 """)
 

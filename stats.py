@@ -7,10 +7,13 @@ Everything here works on two plain arrays:
 
 The checks, in the order the app uses them:
     1. Theil-Sen slope      -> how big is the change (robust to outliers)
-    2. Mann-Kendall test    -> could noise alone explain it (corrected for autocorrelation)
+    2. Mann-Kendall test    -> could noise alone explain it (lag-1 variance inflation
+                               approximation for autocorrelation)
     3. Step check           -> is it one sudden jump instead of a gradual trend
     4. Window stress test   -> does the direction survive other start and end years
     5. Benjamini-Hochberg   -> fair significance when many places are tested at once
+                               (used only by the 15-area comparison and scan.py,
+                               never by a single-place query)
 
 AI assistance: this file was drafted with Claude (Anthropic) during the hackathon
 and reviewed and tested by the team. See README.md.
@@ -69,16 +72,28 @@ def _pairwise_slopes(t: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 def _autocorrelation_factor(t: np.ndarray, x: np.ndarray, slope: float) -> float:
     """
-    Variance correction for autocorrelation (lag-1 effective sample size).
+    Lag-1 variance inflation approximation for autocorrelation.
 
     Years that resemble their neighbours carry less independent information than
-    the plain test assumes. We remove the trend, measure how strongly each year
-    resembles the year before it (rho), and inflate the variance of S by
-    (1 + rho) / (1 - rho). The same idea is behind the corrections of
-    Hamed & Rao (1998) and Yue & Wang (2004).
+    the plain Mann-Kendall test assumes. We remove the Theil-Sen trend, estimate
+    the lag-1 autocorrelation of what is left (rho), and multiply the variance of S
+    by (1 + rho) / (1 - rho), the factor for an AR(1) process.
 
-    Two cautious choices: rho gets the usual small-sample bias correction, and
-    the variance is never shrunk (factor >= 1).
+    What this is NOT: it is not the full modified Mann-Kendall test of
+    Hamed & Rao (1998), which sums significant autocorrelations of the ranks over
+    many lags, nor the pre-whitening procedure of Yue & Wang (2004). It uses only
+    lag 1, which is the same idea in its simplest form. Those papers are cited as
+    the source of the idea, not as the algorithm implemented here.
+
+    Three cautious choices:
+      - rho gets a small-sample bias correction, (1 + 4 rho) / n, because lag-1
+        estimates run low in short series;
+      - rho is capped at 0.9, so the factor never exceeds 19;
+      - the variance is never shrunk (factor >= 1), even when rho is negative.
+
+    calibration.py measures the effect: on pure AR(1) noise with rho 0.3 and 0.5,
+    Mizan calls about 6% of records Robust, where a plain straight-line fit calls
+    16% and 27% of them significant.
     """
     n = len(x)
     r = x - slope * (t - t.mean())
@@ -201,11 +216,29 @@ class Windows:
 
 
 def window_test(t, x, shortest: int = 15) -> Windows:
-    """Re-run the trend test for every start and end year at least `shortest` years apart."""
+    """
+    Re-run the trend test for every start and end year at least `shortest` years apart.
+
+    Two lengths are involved:
+      - `shortest` (15 years) is the shortest period that is computed and drawn
+        in the app's stress-test chart.
+      - `long_length` is the shortest period that counts toward `agreement`, the
+        share that must point the same way as the full record (90% for Robust).
+        Short periods flip direction easily, so they are drawn but not counted.
+
+    For records of 30 years or more, long_length is MIN_YEARS (20 years). Every
+    built-in NASA POWER record qualifies: 45 years for weather, 42 for sunlight.
+    A record of 20 to 29 years (only possible through "Any point on Earth" with a
+    shorter series) cannot fit many 20-year periods, so long_length becomes 60% of
+    the record, rounded down, and never under 10 years: 12 years for a 20-year
+    record, 17 for a 29-year one. `shortest` is lowered to match when needed.
+    Records under MIN_YEARS never reach this test; judge() returns Inconclusive first.
+    """
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     n = len(x)
     full_sign = np.sign(trend_test(t, x).slope)
+    # 20 years for records of 30+ years; 60% of the record (at least 10) for shorter ones
     long_length = MIN_YEARS if n >= 30 else max(10, int(n * 0.6))
     shortest = min(shortest, long_length)
 
@@ -263,6 +296,11 @@ def judge(t, x) -> Verdict:
 def benjamini_hochberg(p_values, q: float = ALPHA):
     """
     False discovery rate control. Returns (adjusted p-values, keep flags).
+
+    Applied only when several places are tested together: the "Compare Saudi
+    cities" tab in app.py (15 areas, one variable and season at a time) and
+    scan.py (each variable and season across the 15 areas). A single-place query
+    in "Investigate one place" is one test, so its p-value is not adjusted.
 
     Testing 15 cities at the 5% level would produce a false alarm fairly often by
     chance alone. The adjusted p-value of each city accounts for how many were tested.

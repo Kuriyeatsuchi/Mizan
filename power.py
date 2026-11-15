@@ -2,8 +2,16 @@
 Mizan data access: monthly values from the NASA POWER API.
 
 NASA POWER (https://power.larc.nasa.gov/) serves weather and solar values for any
-point on Earth. Its meteorology comes from NASA's MERRA-2 model and starts in 1981.
-No login or API key is needed.
+point on Earth. No login or API key is needed. The values come from different
+NASA products depending on the variable (see SOURCES below):
+
+  - Weather (temperature, rainfall, humidity, wind): NASA GMAO's MERRA-2
+    reanalysis model, from 1981.
+  - Sunlight reaching the surface (ALLSKY_SFC_SW_DWN): NASA GEWEX SRB
+    Release 4.0-IP from 1984 to 2000, then CERES SYN1deg from 2001.
+    The change of product in 2001 can create a step in a sunlight record.
+
+Source list: https://power.larc.nasa.gov/docs/methodology/data/sources_fluxes/
 
 AI assistance: this file was drafted with Claude (Anthropic) during the hackathon
 and reviewed and tested by the team. See README.md.
@@ -32,6 +40,28 @@ VARIABLES = {
     "WS10M": "Wind speed at 10 m",
     "ALLSKY_SFC_SW_DWN": "Sunlight reaching the surface",
 }
+
+# Which NASA product each variable comes from, as listed in NASA POWER's data
+# sources. Shown in the app's "Data source" panel and in the README.
+MERRA2 = "NASA GMAO MERRA-2 reanalysis model (1981 onwards)"
+SOLAR = ("NASA GEWEX SRB Release 4.0-IP (1984-2000), then CERES SYN1deg (2001 onwards). "
+         "The record switches product in 2001, so a step near that year may come from the switch.")
+SOURCES = {
+    "T2M": MERRA2,
+    "T2M_MAX": MERRA2,
+    "T2M_MIN": MERRA2,
+    "PRECTOTCORR": MERRA2,
+    "RH2M": MERRA2,
+    "WS10M": MERRA2,
+    "ALLSKY_SFC_SW_DWN": SOLAR,
+}
+SOURCES_URL = "https://power.larc.nasa.gov/docs/methodology/data/sources_fluxes/"
+
+
+def source_of(parameter: str) -> str:
+    """The NASA product behind one POWER parameter."""
+    return SOURCES.get(parameter, "NASA POWER (see " + SOURCES_URL + ")")
+
 
 SEASONS = {
     "Whole year": list(range(1, 13)),
@@ -111,6 +141,7 @@ def fetch(lat: float, lon: float, parameter: str) -> tuple[pd.DataFrame, dict]:
     if csv_path.exists() and json_path.exists():
         meta = json.loads(json_path.read_text())
         meta["saved_copy"] = True
+        meta["source"] = source_of(parameter)
         return pd.read_csv(csv_path), meta
 
     last_error = None
@@ -123,7 +154,7 @@ def fetch(lat: float, lon: float, parameter: str) -> tuple[pd.DataFrame, dict]:
             raise RuntimeError(f"Could not reach NASA POWER. Check your internet connection. ({err})") from err
         if response.ok:
             table, meta = parse(response.json(), parameter)
-            meta.update(url=url, accessed=dt.date.today().isoformat())
+            meta.update(url=url, accessed=dt.date.today().isoformat(), source=source_of(parameter))
             try:
                 save_copy(lat, lon, parameter, table, meta)
             except OSError:

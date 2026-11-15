@@ -35,7 +35,7 @@ The same four checks, in the same order and with the same thresholds, for every 
 | Record length | Is there enough data? | At least 20 complete years |
 | Noise test | Could random variation explain it? | Mann-Kendall p below 0.05 after an autocorrelation correction, and the 95% range of the slope excludes zero |
 | Shift check | Is it gradual? | A single step does not fit clearly better than a line (BIC difference of 6 or less), or a significant same-direction trend exists on one side of the step |
-| Stress test | Does it survive other start and end years? | At least 90% of all periods of 20+ years have the same direction as the full record |
+| Stress test | Does it survive other start and end years? | At least 90% of all periods of 20+ years have the same direction as the full record (records under 30 years, possible only for a custom point: periods of at least 60% of the record) |
 
 - **Robust:** passes all four.
 - **Inconclusive:** fails the noise test or the stress test. This does not mean nothing is changing. It means this record cannot show it.
@@ -61,7 +61,7 @@ Candidates we would test: recovery from the 1991 Mount Pinatubo eruption for the
 and the 1997-1998 El Niño for the 1998-1999 shifts. The sunlight record's change of source (see NASA data
 below) happens in 2001, and none of the 22 shifts falls in 2001, so it does not explain these clusters.
 
-## How well is the scale calibrated?
+## How well calibrated is Mizan?
 
 `calibration.py` runs Mizan, and an ordinary straight-line fit, on simulated 45-year records where the truth
 is known (300 records per case). Trends have year-to-year autocorrelation 0.3; steps happen in 2001.
@@ -100,9 +100,9 @@ streamlit run app.py
 
 | Command | What it does |
 |---|---|
-| `python -m pytest` | Runs the automated checks (needs `pip install pytest`) |
+| `python -m pytest` | Runs the automated checks |
 | `python scan.py` | Re-runs all 525 tests from the saved data |
-| `python calibration.py` | Re-runs the calibration simulation (a few minutes) |
+| `python calibration.py` | Re-runs the calibration simulation and prints the table above (about 5 minutes; add `--csv` to save `results/calibration.csv`) |
 | `python prefetch.py` | Downloads the built-in areas from NASA POWER into `data/` |
 
 ## Files
@@ -113,6 +113,7 @@ streamlit run app.py
 - `scan.py`, `calibration.py`, `prefetch.py` the scripts in the table above
 - `data/` saved NASA POWER records for the built-in areas, each with its request URL and access date
 - `results/all_results.csv` every verdict from the scan
+- `results/calibration.csv` the calibration table above
 - `tests/` automated checks
 
 ## NASA data
