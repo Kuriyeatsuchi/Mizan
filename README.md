@@ -193,10 +193,8 @@ Accessed 14 November 2026. Parameters: `T2M`, `T2M_MAX`, `T2M_MIN`, `PRECTOTCORR
 
 ## Use of AI
 
-This project was built with AI assistance (Claude by Anthropic). Claude drafted the code in `app.py`,
-`stats.py`, `power.py`, `scan.py`, `calibration.py`, `prefetch.py` and the tests, and helped write this README.
-The team ran and tested the app, chose what to investigate, and is responsible for the results and their interpretation.
-No AI-generated images are used in the app.
+We used Claude (Anthropic) as a coding and writing assistant. Files it helped draft say so in their header.
+The team tested the code, chose what to investigate, and checked the results.
 
 ## Open-source libraries
 
