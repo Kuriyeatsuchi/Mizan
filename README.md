@@ -4,6 +4,8 @@
 
 **Live app:** https://mizan-trends.streamlit.app
 
+**Slides (7-slide demo, PDF):** [docs/Mizan-slides.pdf](docs/Mizan-slides.pdf)
+
 Mizan weighs the evidence before calling a change in NASA data a trend.
 Pick a place and a variable. Mizan shows how it has changed since 1981, how fast it is changing
 per decade, and a verdict with its reasons: **Robust**, **Inconclusive** or **Abrupt shift**.
@@ -114,6 +116,7 @@ streamlit run app.py
 - `data/` saved NASA POWER records for the built-in areas, each with its request URL and access date
 - `results/all_results.csv` every verdict from the scan
 - `results/calibration.csv` the calibration table above
+- `docs/Mizan-slides.pdf` the 7-slide project demo
 - `tests/` automated checks
 
 ## NASA data
