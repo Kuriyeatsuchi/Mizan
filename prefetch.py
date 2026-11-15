@@ -14,7 +14,7 @@ for city, (lat, lon) in power.CITIES.items():
     for parameter in power.VARIABLES:
         for attempt in range(3):
             try:
-                table, meta = power.fetch(lat, lon, parameter)
+                table, meta = power.fetch(lat, lon, parameter, save=True)
                 state = "already saved" if meta.get("saved_copy") else "downloaded"
                 print(f"{city:10s} {parameter:18s} {len(table):4d} months  {state}")
                 if state == "downloaded":

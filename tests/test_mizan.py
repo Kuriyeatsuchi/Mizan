@@ -101,3 +101,124 @@ def test_stress_test_window_length():
     assert stats.window_test(YEARS[:42], rng.normal(0, 1, 42)).long_length == 20     # sunlight, 42 years
     assert stats.window_test(YEARS[:25], rng.normal(0, 1, 25)).long_length == 15     # 60% of 25
     assert stats.window_test(YEARS[:20], rng.normal(0, 1, 20)).long_length == 12     # 60% of 20
+
+
+# ------------------------------------------------------------ reference values (SciPy)
+
+def test_theil_sen_and_interval_match_scipy():
+    from scipy.stats import theilslopes
+    rng = np.random.default_rng(5)
+    # alternating noise has negative lag-1 autocorrelation, so no correction is applied
+    x = 0.02 * (YEARS - YEARS[0]) + 0.3 * (-1) ** np.arange(len(YEARS)) + rng.normal(0, 0.1, len(YEARS))
+    t = stats.trend_test(YEARS, x)
+    assert t.variance_factor == 1.0
+    ref = theilslopes(x, YEARS, alpha=0.95)
+    assert np.isclose(t.slope, ref.slope)
+    assert np.isclose(t.slope_low, ref.low_slope) and np.isclose(t.slope_high, ref.high_slope)
+
+
+def test_mann_kendall_s_matches_kendall_tau():
+    from scipy.stats import kendalltau
+    rng = np.random.default_rng(6)
+    x = rng.normal(0, 1, len(YEARS)) + 0.01 * np.arange(len(YEARS))
+    n = len(x)
+    tau = kendalltau(YEARS, x).statistic
+    assert np.isclose(stats.trend_test(YEARS, x).s, tau * n * (n - 1) / 2)
+
+
+def test_benjamini_hochberg_matches_scipy():
+    from scipy.stats import false_discovery_control
+    p = np.random.default_rng(8).uniform(0, 0.2, 15)
+    adjusted, _ = stats.benjamini_hochberg(p)
+    assert np.allclose(adjusted, false_discovery_control(p))
+
+
+# ------------------------------------------------------------ edge cases
+
+def test_constant_series_does_not_crash():
+    v = stats.judge(YEARS, np.full(len(YEARS), 5.0))
+    assert v.label == stats.INCONCLUSIVE and v.trend.slope == 0.0
+
+
+# ------------------------------------------------------------ fixes from the review round
+
+def _record(city, parameter, season):
+    table, _ = power.fetch(*power.CITIES[city], parameter)
+    return power.yearly(table, power.SEASONS[season])
+
+
+def test_strong_step_is_an_abrupt_shift_not_noise():
+    # Tabuk sunlight: one large jump. Measured around a straight line the jump looks
+    # like slow random wandering; the step check must run first.
+    y, x = _record("Tabuk", "ALLSKY_SFC_SW_DWN", "Whole year")
+    v = stats.judge(y, x, known_break=power.SOURCE_CHANGE["ALLSKY_SFC_SW_DWN"])
+    assert v.step.is_step and v.label == stats.SHIFT
+
+
+def test_step_on_autocorrelated_noise_uses_effective_years():
+    # strongly autocorrelated noise wanders slowly; it should rarely be read as a step
+    rng = np.random.default_rng(9)
+    steps = 0
+    for _ in range(100):
+        x = np.empty(len(YEARS)); x[0] = rng.normal()
+        for i in range(1, len(YEARS)):
+            x[i] = 0.7 * x[i - 1] + rng.normal(0, np.sqrt(1 - 0.49))
+        steps += stats.judge(YEARS, x).label == stats.SHIFT
+    assert steps <= 4
+
+
+def test_sunlight_source_change_blocks_robust():
+    # Dammam winter sunlight: two flat levels split at 2001 fit better than a trend,
+    # and neither side has a trend of its own.
+    y, x = _record("Dammam", "ALLSKY_SFC_SW_DWN", "Winter (Dec-Feb)")
+    assert stats.judge(y, x).label == stats.ROBUST          # without the check
+    v = stats.judge(y, x, known_break=2001)
+    assert v.label == stats.INCONCLUSIVE and v.notes == ["source_change"]
+
+
+def test_sunlight_trend_that_survives_the_switch_stays_robust():
+    y, x = _record("Jazan", "ALLSKY_SFC_SW_DWN", "Summer (Jun-Aug)")
+    v = stats.judge(y, x, known_break=2001)
+    assert v.label == stats.ROBUST and not v.source.explains
+
+
+def test_identical_records_count_once_in_benjamini_hochberg():
+    a = (YEARS, np.arange(45.0)); b = (YEARS, np.arange(45.0) * 2)
+    adjusted, _ = stats.adjust_places([0.02, 0.02, 0.04], [a, a, b])
+    assert np.allclose(adjusted, [0.04, 0.04, 0.04])          # 2 distinct records, not 3
+
+
+def test_shift_verdicts_are_adjusted_too():
+    v = stats.Verdict(stats.SHIFT, notes=["step"])
+    stats.apply_places([v], np.array([False]))
+    assert v.label == stats.INCONCLUSIVE and v.notes[0] == "many_places"
+
+
+def test_app_never_saves_custom_points(tmp_path, monkeypatch):
+    monkeypatch.setattr(power, "DATA_DIR", tmp_path)
+    payload = {"parameters": {"T2M": {"units": "C", "longname": "x"}},
+               "properties": {"parameter": {"T2M": {"202001": 23.0}}}}
+
+    class Reply:
+        ok, status_code, text = True, 200, ""
+        def json(self): return payload
+
+    monkeypatch.setattr(power.requests, "get", lambda *a, **k: Reply())
+    power.fetch(1.0, 2.0, "T2M")
+    assert list(tmp_path.iterdir()) == []
+    power.fetch(1.0, 2.0, "T2M", save=True)
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_committed_results_match_the_code():
+    # results/all_results.csv must be regenerated (python scan.py) whenever the method changes
+    import pandas as pd
+    import scan
+    saved = pd.read_csv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "results", "all_results.csv"))
+    saved = saved[(saved["param"] == "T2M") & (saved["season"] == "Whole year")].set_index("city")
+    rows, errors = scan.judge_places("T2M", "Whole year")
+    assert not errors and len(rows) == len(saved)
+    for row in rows:
+        assert row["verdict"] == saved.loc[row["city"], "verdict"]
+        assert np.isclose(row["p"], saved.loc[row["city"], "p"], rtol=1e-9, atol=0)

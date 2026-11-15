@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,8 @@ import requests
 
 API = "https://power.larc.nasa.gov/api/temporal/monthly/point"
 FIRST_YEAR = 1981
+TIMEOUT = 30          # seconds per request
+RETRY_WAIT = 2        # seconds before the one retry after a timeout or a busy server
 DATA_DIR = Path(__file__).parent / "data"   # saved copies, so the app works if the API is down
 
 # What the user can pick. Labels and units are replaced by NASA's own wording
@@ -56,6 +59,31 @@ SOURCES = {
     "ALLSKY_SFC_SW_DWN": SOLAR,
 }
 SOURCES_URL = "https://power.larc.nasa.gov/docs/methodology/data/sources_fluxes/"
+
+
+# Years at which a record switches data product. A jump at that year may be an
+# artifact of the switch, so stats.judge(known_break=...) checks it explicitly.
+SOURCE_CHANGE = {"ALLSKY_SFC_SW_DWN": 2001}
+SOURCE_CHANGE_NAME = {"ALLSKY_SFC_SW_DWN": "GEWEX SRB to CERES"}
+
+# Grid size behind each value. MERRA-2 is 0.5 x 0.625 degrees; POWER's solar
+# values are on a 1 x 1 degree grid, so nearby places can share one record
+# (Jeddah and Makkah have the same sunlight series).
+MERRA2_GRID = "one MERRA-2 grid cell, 0.5° × 0.625° (roughly 55 km across; narrower east-west far from the equator)"
+SOLAR_GRID = ("one solar grid cell, 1° × 1° (roughly 110 km across; narrower east-west far from the equator). "
+              "Nearby places can share a cell")
+RESOLUTION = {k: SOLAR_GRID if k == "ALLSKY_SFC_SW_DWN" else MERRA2_GRID for k in VARIABLES}
+
+# One line each, for readers who do not know the variable names.
+DESCRIPTIONS = {
+    "T2M": "Average air temperature 2 metres above the ground, day and night.",
+    "T2M_MAX": "The hottest temperature of each day, averaged over the month.",
+    "T2M_MIN": "The coolest temperature of each day (usually at night), averaged over the month.",
+    "PRECTOTCORR": "Rain and snow reaching the ground, in millimetres per day, bias-corrected by NASA.",
+    "RH2M": "How close the air is to saturation with water vapour, in percent.",
+    "WS10M": "Average wind speed 10 metres above the ground.",
+    "ALLSKY_SFC_SW_DWN": "Sunlight energy reaching the ground per day, including the effect of clouds and dust.",
+}
 
 
 def source_of(parameter: str) -> str:
@@ -132,10 +160,31 @@ def save_copy(lat: float, lon: float, parameter: str, table: pd.DataFrame, meta:
     json_path.write_text(json.dumps(meta, indent=2))
 
 
-def fetch(lat: float, lon: float, parameter: str) -> tuple[pd.DataFrame, dict]:
+def _get(url: str) -> requests.Response:
+    """One request, retried once after a short wait if it times out or the server is busy."""
+    for attempt in (1, 2):
+        try:
+            response = requests.get(url, timeout=TIMEOUT)
+        except requests.RequestException as err:
+            if attempt == 1:
+                time.sleep(RETRY_WAIT)
+                continue
+            raise RuntimeError(f"Could not reach NASA POWER. Check your internet connection. ({err})") from err
+        if (response.status_code == 429 or response.status_code >= 500) and attempt == 1:
+            time.sleep(RETRY_WAIT)
+            continue
+        return response
+    return response
+
+
+def fetch(lat: float, lon: float, parameter: str, save: bool = False) -> tuple[pd.DataFrame, dict]:
     """
     Monthly record for one point. Uses the saved copy in data/ if there is one,
-    otherwise downloads from NASA POWER and saves a copy for next time.
+    otherwise downloads from NASA POWER.
+
+    save=True keeps a copy in data/ (prefetch.py uses it for the built-in areas).
+    The app never saves, so custom points do not pile up on the server's disk;
+    Streamlit's own cache keeps them for a day instead.
     """
     csv_path, json_path = _copy_paths(lat, lon, parameter)
     if csv_path.exists() and json_path.exists():
@@ -148,20 +197,20 @@ def fetch(lat: float, lon: float, parameter: str) -> tuple[pd.DataFrame, dict]:
     this_year = dt.date.today().year
     for end in (this_year - 1, this_year - 2):   # the newest completed year may not be published yet
         url = build_url(lat, lon, parameter, FIRST_YEAR, end)
-        try:
-            response = requests.get(url, timeout=60)
-        except requests.RequestException as err:
-            raise RuntimeError(f"Could not reach NASA POWER. Check your internet connection. ({err})") from err
+        response = _get(url)
         if response.ok:
             table, meta = parse(response.json(), parameter)
             meta.update(url=url, accessed=dt.date.today().isoformat(), source=source_of(parameter))
-            try:
-                save_copy(lat, lon, parameter, table, meta)
-            except OSError:
-                pass   # read-only disk: carry on without saving
+            if save:
+                try:
+                    save_copy(lat, lon, parameter, table, meta)
+                except OSError:
+                    pass   # read-only disk: carry on without saving
             meta["saved_copy"] = False
             return table, meta
         last_error = f"NASA POWER answered {response.status_code}: {response.text[:300]}"
+        if response.status_code == 429 or response.status_code >= 500:
+            break   # busy or down: an earlier end year will not help
     raise RuntimeError(last_error)
 
 

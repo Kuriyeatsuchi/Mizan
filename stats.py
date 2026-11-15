@@ -7,13 +7,18 @@ Everything here works on two plain arrays:
 
 The checks, in the order the app uses them:
     1. Theil-Sen slope      -> how big is the change (robust to outliers)
-    2. Mann-Kendall test    -> could noise alone explain it (lag-1 variance inflation
-                               approximation for autocorrelation)
-    3. Step check           -> is it one sudden jump instead of a gradual trend
+    2. Step check           -> is it one sudden jump instead of a gradual trend
+    3. Mann-Kendall test    -> could noise alone explain it (lag-1 AR(1) variance
+                               inflation, the large-sample form of Yue & Wang 2004).
+                               When the step check finds a strong jump, the noise is
+                               measured around the jump, not around a straight line.
     4. Window stress test   -> does the direction survive other start and end years
-    5. Benjamini-Hochberg   -> fair significance when many places are tested at once
-                               (used only by the 15-area comparison and scan.py,
-                               never by a single-place query)
+                               (a stability screen, not a significance test)
+    5. Source-change check  -> for records that switch data product at a known year
+                               (sunlight, 2001), is the change just that switch
+    6. Benjamini-Hochberg   -> fair significance when many places are tested at once
+                               (used by the 15-area comparison and scan.py, never by
+                               a single-place query)
 
 AI assistance: this file was drafted with Claude (Anthropic) during the hackathon
 and reviewed and tested by the team. See README.md.
@@ -70,20 +75,26 @@ def _pairwise_slopes(t: np.ndarray, x: np.ndarray) -> np.ndarray:
     return (x[j] - x[i]) / (t[j] - t[i])
 
 
-def _autocorrelation_factor(t: np.ndarray, x: np.ndarray, slope: float) -> float:
+def _autocorrelation_factor(t: np.ndarray, x: np.ndarray, slope: float,
+                            break_year: float | None = None) -> float:
     """
-    Lag-1 variance inflation approximation for autocorrelation.
+    Lag-1 (AR(1)) variance inflation for autocorrelation.
 
     Years that resemble their neighbours carry less independent information than
     the plain Mann-Kendall test assumes. We remove the Theil-Sen trend, estimate
     the lag-1 autocorrelation of what is left (rho), and multiply the variance of S
-    by (1 + rho) / (1 - rho), the factor for an AR(1) process.
+    by (1 + rho) / (1 - rho), the factor for an AR(1) process. This is the
+    large-sample form of the effective-sample-size correction of Yue & Wang (2004).
 
     What this is NOT: it is not the full modified Mann-Kendall test of
     Hamed & Rao (1998), which sums significant autocorrelations of the ranks over
-    many lags, nor the pre-whitening procedure of Yue & Wang (2004). It uses only
-    lag 1, which is the same idea in its simplest form. Those papers are cited as
-    the source of the idea, not as the algorithm implemented here.
+    many lags, nor the trend-free pre-whitening procedure of Yue & Wang (2002).
+    It uses only lag 1.
+
+    break_year: if the step check found a strong jump, the leftovers are measured
+    around the two flat levels instead of around a line. Otherwise a jump makes
+    the leftovers look like slow, persistent noise, and the test would call a
+    clear step "random variation" for the wrong reason.
 
     Three cautious choices:
       - rho gets a small-sample bias correction, (1 + 4 rho) / n, because lag-1
@@ -95,8 +106,19 @@ def _autocorrelation_factor(t: np.ndarray, x: np.ndarray, slope: float) -> float
     Mizan calls about 6% of records Robust, where a plain straight-line fit calls
     16% and 27% of them significant.
     """
-    n = len(x)
-    r = x - slope * (t - t.mean())
+    if break_year is not None:
+        after = t >= break_year
+        r = x.copy()
+        r[after] -= x[after].mean()
+        r[~after] -= x[~after].mean()
+    else:
+        r = x - slope * (t - t.mean())
+    return _inflation(r)
+
+
+def _inflation(r: np.ndarray) -> float:
+    """(1 + rho) / (1 - rho) for the lag-1 autocorrelation rho of the leftovers r."""
+    n = len(r)
     r = r - r.mean()
     denom = float((r ** 2).sum())
     if denom == 0 or n < 5:
@@ -109,8 +131,11 @@ def _autocorrelation_factor(t: np.ndarray, x: np.ndarray, slope: float) -> float
     return (1 + rho) / (1 - rho)
 
 
-def trend_test(t, x) -> Trend:
-    """Theil-Sen slope with a 95% range, and the corrected Mann-Kendall test."""
+def trend_test(t, x, break_year: float | None = None) -> Trend:
+    """
+    Theil-Sen slope with a 95% range, and the corrected Mann-Kendall test.
+    break_year: measure the autocorrelation around a step at this year (see above).
+    """
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     n = len(x)
@@ -122,7 +147,7 @@ def trend_test(t, x) -> Trend:
     intercept = float(np.median(x) - slope * np.median(t))
 
     s = _mk_s(x)
-    factor = _autocorrelation_factor(t, x, slope)
+    factor = _autocorrelation_factor(t, x, slope, break_year)
     variance = _mk_variance(x) * factor
 
     if variance <= 0 or s == 0:
@@ -155,6 +180,7 @@ class Step:
     break_year: float | None   # first year of the "after" part
     jump: float                # mean after minus mean before
     bic_margin: float          # > 0 means a step fits better than a straight line
+                               # (computed on the effective number of independent years)
 
 
 def step_check(t, x) -> Step:
@@ -164,6 +190,12 @@ def step_check(t, x) -> Step:
         one sudden jump between two flat levels.
     A jump can be a real shift in the climate, or a change in what the model was
     fed. Either way it is not a gradual trend, so the app reports it separately.
+
+    BIC assumes independent years. Autocorrelated noise wanders slowly and can
+    look like a jump, so the comparison uses the effective number of independent
+    years, n / (1 + rho) * (1 - rho), with rho measured around the best step.
+    The break position is searched over, so it counts as a parameter, and the
+    margin of 6 ("strong" evidence) adds a further allowance for that search.
     """
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
@@ -183,9 +215,12 @@ def step_check(t, x) -> Step:
             best_rss, best_k = rss, k
     best_rss += 1e-12
 
-    bic_line = n * math.log(rss_line / n) + 2 * math.log(n)
-    bic_step = n * math.log(best_rss / n) + 3 * math.log(n)   # 2 levels + the break position
-    margin = bic_line - bic_step
+    r = x.copy()
+    r[:best_k] -= x[:best_k].mean()
+    r[best_k:] -= x[best_k:].mean()
+    n_eff = n / _inflation(r)
+    # BIC(line) - BIC(step): a line has 2 parameters, a step 3 (2 levels + the break position)
+    margin = n_eff * math.log(rss_line / best_rss) - math.log(n_eff)
     jump = float(x[best_k:].mean() - x[:best_k].mean())
 
     is_step = False
@@ -201,6 +236,52 @@ def step_check(t, x) -> Step:
         is_step = not trend_inside
 
     return Step(is_step, float(t[best_k]), jump, float(margin))
+
+
+# ---------------------------------------------------------------- known change of data source
+
+@dataclass
+class SourceChange:
+    year: float           # first year of the new data product
+    bic_margin: float     # > 0 means a step at that year fits better than a straight line
+    trend_inside: bool    # a significant same-direction trend exists on one side of the switch
+    explains: bool        # the switch explains the change at least as well as a trend does
+
+
+def source_change_check(t, x, year: float, min_side: int = 8) -> SourceChange | None:
+    """
+    Some records join two data products at a known year (NASA POWER sunlight:
+    GEWEX SRB up to 2000, CERES from 2001). A jump at that year is more likely an
+    artifact of the switch than a change in the climate.
+
+    The step check above looks for the single best break anywhere, so a smaller
+    jump at the switch can hide inside a record and be read as a gradual trend.
+    Here the break is fixed at the switch: two flat levels, split at `year`,
+    against a straight line. Both models have two parameters, so the better fit
+    is simply the smaller residual sum of squares.
+
+    The switch "explains" the change when the two-level model fits better AND
+    neither side, on its own, shows a significant trend in the same direction.
+    Returns None when either side has fewer than `min_side` years.
+    """
+    t = np.asarray(t, dtype=float)
+    x = np.asarray(x, dtype=float)
+    after = t >= year
+    if after.sum() < min_side or (~after).sum() < min_side:
+        return None
+    n = len(x)
+    line = np.polyfit(t, x, 1)
+    rss_line = float(((x - np.polyval(line, t)) ** 2).sum()) + 1e-12
+    rss_step = float(((x[after] - x[after].mean()) ** 2).sum()
+                     + ((x[~after] - x[~after].mean()) ** 2).sum()) + 1e-12
+    margin = n * math.log(rss_line / rss_step)
+    direction = np.sign(trend_test(t, x).slope)
+    trend_inside = False
+    for side in (~after, after):
+        part = trend_test(t[side], x[side])
+        if part.p < ALPHA and np.sign(part.slope) == direction:
+            trend_inside = True
+    return SourceChange(float(year), float(margin), trend_inside, margin > 0 and not trend_inside)
 
 
 # ---------------------------------------------------------------- window stress test
@@ -225,6 +306,12 @@ def window_test(t, x, shortest: int = 15) -> Windows:
       - `long_length` is the shortest period that counts toward `agreement`, the
         share that must point the same way as the full record (90% for Robust).
         Short periods flip direction easily, so they are drawn but not counted.
+
+    The windows overlap heavily, so `agreement` is not a probability and 90% is
+    not a confidence level. It is a stability screen against cherry-picked start
+    and end years. Its effect on false alarms and detections is measured only by
+    calibration.py. It also marks change that starts late in the record
+    (flat, then rising) as unstable, even when that change is real.
 
     For records of 30 years or more, long_length is MIN_YEARS (20 years). Every
     built-in NASA POWER record qualifies: 45 years for weather, 42 for sunlight.
@@ -268,39 +355,74 @@ class Verdict:
     step: Step | None = None
     windows: Windows | None = None
     notes: list[str] = field(default_factory=list)   # short machine-readable reasons
+    source: SourceChange | None = None                # only for records with a known source change
 
 
-def judge(t, x) -> Verdict:
-    """Weigh the evidence and return one of: Robust, Inconclusive, Abrupt shift."""
+def judge(t, x, known_break: float | None = None) -> Verdict:
+    """
+    Weigh the evidence and return one of: Robust, Inconclusive, Abrupt shift.
+
+    known_break: first year of a new data product inside the record, if any
+    (power.SOURCE_CHANGE). A change that the switch explains is never Robust.
+
+    Notes (first one is the main reason):
+      too_short, not_significant, step, unstable, source_change,
+      and many_places (added by callers after Benjamini-Hochberg).
+    """
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     if len(x) < MIN_YEARS:
         return Verdict(INCONCLUSIVE, notes=["too_short"])
 
-    trend = trend_test(t, x)
+    # The step check runs first. If the record is one strong jump, the noise test
+    # measures the year-to-year noise around that jump, so a clear step is not
+    # mistaken for slow random wandering.
     step = step_check(t, x)
+    trend = trend_test(t, x, break_year=step.break_year if step.is_step else None)
     windows = window_test(t, x)
-    notes = []
+    source = None
+    if known_break is not None and t[0] < known_break <= t[-1]:
+        source = source_change_check(t, x, known_break)
+
+    def verdict(label, notes):
+        return Verdict(label, trend, step, windows, notes, source)
 
     if not trend.significant:
-        return Verdict(INCONCLUSIVE, trend, step, windows, ["not_significant"])
+        return verdict(INCONCLUSIVE, ["not_significant"])
     if step.is_step:
-        return Verdict(SHIFT, trend, step, windows, ["step"])
+        at_switch = known_break is not None and abs(step.break_year - known_break) <= 1
+        return verdict(SHIFT, ["step", "source_change"] if at_switch else ["step"])
     if windows.agreement < AGREEMENT_NEEDED:
-        return Verdict(INCONCLUSIVE, trend, step, windows, ["unstable"])
-    return Verdict(ROBUST, trend, step, windows, notes)
+        return verdict(INCONCLUSIVE, ["unstable"])
+    if source is not None and source.explains:
+        return verdict(INCONCLUSIVE, ["source_change"])
+    return verdict(ROBUST, [])
 
 
 # ---------------------------------------------------------------- many places at once
+
+def noise_p(t, x) -> float:
+    """
+    The noise-test p-value exactly as judge() computes it (step check first),
+    without the slow stress test. Used to adjust across places quickly.
+    """
+    step = step_check(t, x)
+    return trend_test(t, x, break_year=step.break_year if step.is_step else None).p
+
 
 def benjamini_hochberg(p_values, q: float = ALPHA):
     """
     False discovery rate control. Returns (adjusted p-values, keep flags).
 
-    Applied only when several places are tested together: the "Compare Saudi
-    cities" tab in app.py (15 areas, one variable and season at a time) and
-    scan.py (each variable and season across the 15 areas). A single-place query
-    in "Investigate one place" is one test, so its p-value is not adjusted.
+    Applied only when several places are tested together. The family is fixed in
+    advance: the 15 built-in areas, for one variable and one season (35 families
+    in scan.py). There is no correction across all 525 tests. A single-place
+    query in "Investigate one place" is one test, so its p-value is not adjusted;
+    the app shows the family-adjusted value next to it for the built-in areas.
+
+    BH stays valid when the places are positively correlated, as neighbouring
+    grid cells are, but 15 agreeing places are fewer independent pieces of
+    evidence than the count suggests.
 
     Testing 15 cities at the 5% level would produce a false alarm fairly often by
     chance alone. The adjusted p-value of each city accounts for how many were tested.
@@ -315,3 +437,43 @@ def benjamini_hochberg(p_values, q: float = ALPHA):
     adjusted = np.empty(m)
     adjusted[order] = np.clip(ranked, 0, 1)
     return adjusted, adjusted < q
+
+
+def adjust_places(p_values, series):
+    """
+    Benjamini-Hochberg across places, counting identical records once.
+
+    Neighbouring places can fall in the same grid cell (NASA POWER sunlight uses
+    1-degree cells, so Jeddah and Makkah share one record). Counting the same
+    record twice would make the correction look stricter than it is, and would
+    count one piece of evidence as two.
+
+    series: one (years, values) pair per place, in the same order as p_values.
+    Returns (adjusted p-values, keep flags), one per place.
+    """
+    keys = [(tuple(np.asarray(y, dtype=float)), tuple(np.round(np.asarray(v, dtype=float), 9)))
+            for y, v in series]
+    first = {}
+    for i, key in enumerate(keys):
+        first.setdefault(key, i)
+    unique = list(first.values())
+    adjusted_u, keep_u = benjamini_hochberg([p_values[i] for i in unique])
+    where = {key: k for k, key in enumerate(first)}
+    adjusted = np.array([adjusted_u[where[key]] for key in keys])
+    keep = np.array([keep_u[where[key]] for key in keys], dtype=bool)
+    return adjusted, keep
+
+
+def apply_places(verdicts, keep):
+    """
+    After Benjamini-Hochberg, a place keeps a significant verdict (Robust or
+    Abrupt shift) only if its adjusted p-value passes. Otherwise it becomes
+    Inconclusive with the note "many_places". Returns the new labels.
+    """
+    labels = []
+    for v, k in zip(verdicts, keep):
+        if v.label in (ROBUST, SHIFT) and not k:
+            v.label = INCONCLUSIVE
+            v.notes = ["many_places"] + v.notes
+        labels.append(v.label)
+    return labels
